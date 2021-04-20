@@ -1,0 +1,582 @@
+drop table if exists cross_country_skiing.countries cascade;
+drop table if exists cross_country_skiing.sportsman_race cascade;
+drop table if exists cross_country_skiing.discipline_coach cascade;
+drop table if exists cross_country_skiing.coach_sportsman cascade;
+drop table if exists cross_country_skiing.races cascade;
+drop table if exists cross_country_skiing.sportsmen cascade;
+drop table if exists cross_country_skiing.coaches cascade;
+drop table if exists cross_country_skiing.types_of_races cascade;
+drop table if exists cross_country_skiing.logs cascade;
+drop schema if exists cross_country_skiing cascade;
+drop function if exists age_sp(birth_date date);
+drop function if exists before_delete();
+drop function if exists add_to_log();
+
+drop type if exists _tech;
+drop type if exists _gender;
+drop type if exists _result;
+
+drop trigger if exists t_user on cross_country_skiing.sportsmen;
+drop trigger if exists check_remove on cross_country_skiing.sportsmen;
+
+drop role if exists ordinary_user;
+drop role if exists editor;
+drop role if exists moderator;
+drop role if exists administrator;
+
+create schema cross_country_skiing;
+
+create type _tech as enum ('C', 'K', 'Both');
+create type _result as enum ('1', '2', '3');
+
+CREATE TABLE cross_country_skiing.countries(
+  country_id SERIAL PRIMARY KEY,
+  country VARCHAR(30) NOT NULL UNIQUE,
+  head_of_federation varchar(30)
+);
+
+create table cross_country_skiing.types_of_races(
+  type_id serial primary key,
+  name varchar(30) not null,
+  technique _tech,
+  distance integer
+);
+
+create table cross_country_skiing.races (
+  race_id serial primary key,
+  date date,
+  type_id serial not null,
+  country_id serial not null,
+  foreign key (country_id)
+    references cross_country_skiing.countries(country_id),
+  foreign key (type_id)
+    references cross_country_skiing.types_of_races(type_id)
+);
+
+create table cross_country_skiing.sportsmen (
+  sportsman_id serial primary key,
+  name varchar(30) not null,
+  surname varchar(30) not null unique,
+  birth_date date,
+  country_id serial not null,
+  foreign key (country_id)
+    references cross_country_skiing.countries(country_id)
+);
+
+create table cross_country_skiing.sportsman_race(
+  sportsman_id serial not null,
+  race_id serial not null,
+  result _result,
+  primary key(sportsman_id,race_id),
+  foreign key(sportsman_id)
+    references cross_country_skiing.sportsmen(sportsman_id),
+  foreign key(race_id)
+    references cross_country_skiing.races(race_id)
+);
+
+create table cross_country_skiing.coaches(
+  coach_id serial primary key,
+  name varchar(30) not null,
+  surname varchar(30) not null unique,
+  country_id serial not null,
+  foreign key(country_id)
+    references cross_country_skiing.countries(country_id)
+);
+
+create table cross_country_skiing.coach_sportsman(
+  sportsman_id SERIAL NOT NULL,
+  coach_id SERIAL NOT NULL,
+  date_start smallint not null,
+  date_end smallint not null,
+  PRIMARY KEY (sportsman_id, coach_id, date_start),
+  FOREIGN KEY (sportsman_id)
+    REFERENCES cross_country_skiing.sportsmen(sportsman_id),
+  FOREIGN KEY (coach_id)
+    REFERENCES cross_country_skiing.coaches(coach_id)
+);
+
+create table cross_country_skiing.discipline_coach(
+  coach_id SERIAL NOT NULL,
+  type_id SERIAL NOT NULL,
+  PRIMARY KEY (coach_id, type_id),
+  FOREIGN KEY (coach_id)
+    REFERENCES cross_country_skiing.coaches(coach_id),
+  FOREIGN KEY (type_id)
+    REFERENCES cross_country_skiing.types_of_races(type_id)
+);
+
+-- ‘ункци€ определ€юща€ возраст спортсмена, в конце есть пример использовани€
+create or replace function age_sp(birth_date date)
+returns int
+as $$
+declare i int := 0;
+begin
+  while birth_date < now()
+  loop
+    birth_date := birth_date + interval '1 year';
+    i := i + 1;
+  end loop;
+  return i;
+end;
+$$ language plpgsql;
+
+-- “аблица дл€ тригера
+CREATE TABLE cross_country_skiing.logs
+(
+  operation_id serial not null,
+  "info" varchar(100),
+  "time" timestamp(0) without time zone
+);
+
+-- ‘ункци€ дл€ тригера
+CREATE OR REPLACE FUNCTION add_to_log() RETURNS TRIGGER AS $$
+DECLARE
+    mess varchar(100);
+    sp_id varchar(100);
+    final varchar(254);
+BEGIN
+    IF  TG_OP = 'INSERT' THEN
+        sp_id = NEW.sportsman_id;
+        mess := 'Added new sportsmen with sportsmen_id = ';
+        final := mess || sp_id;
+        INSERT INTO cross_country_skiing.logs values (default, final, NOW());
+        RETURN NEW;
+    ELSIF TG_OP = 'UPDATE' THEN
+        sp_id = NEW.sportsman_id;
+        mess := 'Updated sportsmen with sportsmen_id ';
+        final := mess || sp_id;
+        INSERT INTO cross_country_skiing.logs values (default, final, NOW());
+        RETURN NEW;
+    ELSIF TG_OP = 'DELETE' THEN
+        sp_id = OLD.sportsman_id;
+        mess := 'Removed user with sportsmen_id';
+        final := mess || sp_id;
+        INSERT INTO cross_country_skiing.logs values (default, final, NOW());
+        RETURN OLD;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER t_user
+AFTER INSERT OR UPDATE or delete ON cross_country_skiing.sportsmen FOR EACH ROW EXECUTE PROCEDURE add_to_log ();
+
+-- ‘ункци€ ограничение на удаление последнего спортсмена, тоже с тригером, чтобы она автоматически запускалась перед попытой удалени€
+CREATE OR REPLACE FUNCTION before_delete() RETURNS TRIGGER AS $$
+BEGIN
+    if exists (select count(cross_country_skiing.sportsmen.sportsman_id) from cross_country_skiing.sportsmen
+      where cross_country_skiing.sportsmen.country_id = new.country_id
+      group by cross_country_skiing.sportsmen.country_id
+      having count(cross_country_skiing.sportsmen.sportsman_id) > 1)
+      then
+      begin
+        return old;
+      end;
+    else
+      raise exception 'Sportsman who you are trying to delete is the last from his country';
+    end if;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER check_remove
+BEFORE delete ON cross_country_skiing.sportsmen FOR EACH ROW EXECUTE PROCEDURE before_delete ();
+
+
+insert into cross_country_skiing.countries values(default, 'Russia',	'Elena Vialbe');
+insert into cross_country_skiing.countries values(default, 'Norway',	'Eric Roeste');
+insert into cross_country_skiing.countries values(default, 'Finland',	'Markku Haapasalmi');
+insert into cross_country_skiing.countries values(default, 'Italy',	'Loretta Piroia');
+insert into cross_country_skiing.countries values(default, 'Swedish',	'Karin Weijber');
+insert into cross_country_skiing.countries values(default, 'German',	'Alfons Hormann');
+insert into cross_country_skiing.countries values(default, 'Khazakstan',	'Sorokin Vladimir');
+insert into cross_country_skiing.countries values(default, 'USA',	'Simi Hamilton');
+insert into cross_country_skiing.countries values(default, 'Canada',	'Tyler King');
+insert into cross_country_skiing.countries values(default, 'Austria',	'Peter Schrocksnadel');
+insert into cross_country_skiing.countries values(default, 'Switzeland',	'Gian-Franco Kasper');
+insert into cross_country_skiing.countries values(default, 'France',	'Jan Kasper');
+
+insert into cross_country_skiing.types_of_races values (default, 'Skiatlon',	'Both',	'30');
+insert into cross_country_skiing.types_of_races values (default, 'Sprint',	'C',	'4');
+insert into cross_country_skiing.types_of_races values (default, 'Sprint',	'K',	'3');
+insert into cross_country_skiing.types_of_races values (default, 'Individual race',	'C','15');
+insert into cross_country_skiing.types_of_races values (default, 'Individual race',	'K',	'10');
+insert into cross_country_skiing.types_of_races values (default, 'Maraphon',	'C',	'50');
+insert into cross_country_skiing.types_of_races values (default, 'Maraphon',	'K',	'40');
+insert into cross_country_skiing.types_of_races values (default, 'Pursuit',	'C',	'10');
+insert into cross_country_skiing.types_of_races values (default, 'Pursuit',	'K',	'15');
+insert into cross_country_skiing.types_of_races values (default, 'Relay',	'C',	'10');
+insert into cross_country_skiing.types_of_races values (default, 'Relay',	'K',	'10');
+insert into cross_country_skiing.types_of_races values (default, 'Mass start',	'C',	'15');
+insert into cross_country_skiing.types_of_races values (default, 'Mass start',	'K',	'10');
+
+
+insert into cross_country_skiing.races values(default, '24.11.2018',	'2',	'3');
+insert into cross_country_skiing.races values(default, '25.11.2018',	'4',	'3');
+insert into cross_country_skiing.races values(default, '30.11.2018',	'3',	'2');
+insert into cross_country_skiing.races values(default, '01.12.2018',	'5',	'2');
+insert into cross_country_skiing.races values(default, '02.12.2018',	'8',	'2');
+insert into cross_country_skiing.races values(default, '15.12.2018',	'3',	'4');
+insert into cross_country_skiing.races values(default, '16.12.2018',	'5',	'4');
+insert into cross_country_skiing.races values(default, '05.01.2019',	'13',	'4');
+insert into cross_country_skiing.races values(default, '12.01.2019',	'2',	'6');
+insert into cross_country_skiing.races values(default, '13.01.2019',	'6',	'6');
+insert into cross_country_skiing.races values(default, '09.02.2019',	'1',	'3');
+insert into cross_country_skiing.races values(default, '10.02.2019',	'7',	'3');
+insert into cross_country_skiing.races values(default, '27.02.2019',	'4',	'8');
+insert into cross_country_skiing.races values(default, '01.03.2019',	'10',	'8');
+insert into cross_country_skiing.races values(default, '03.03.2019',	'7',	'8');
+insert into cross_country_skiing.races values(default, '16.03.2019',	'11',	'5');
+insert into cross_country_skiing.races values(default, '22.03.2019',	'12',	'9');
+insert into cross_country_skiing.races values(default, '23.03.2019',	'9',	'9');
+
+
+insert into cross_country_skiing.sportsmen values (default, 'Alexander',	'Bolshunov',	'31.12.1996',	'1');
+insert into cross_country_skiing.sportsmen values (default, 'Denis',	'Spitsov',	'16.08.1996',	'1');
+insert into cross_country_skiing.sportsmen values (default, 'Evgeniy',	'Belov',	'07.08.1990',	'1');
+insert into cross_country_skiing.sportsmen values (default, 'Sergey',	'Ustygov',	'08.04.1992',	'1');
+insert into cross_country_skiing.sportsmen values (default, 'Johanes',	'Klaebo',	'22.10.1996',	'2');
+insert into cross_country_skiing.sportsmen values (default, 'Emil',	'Iversen',	'12.08.1991',	'2');
+insert into cross_country_skiing.sportsmen values (default, 'Sjir',	'Rothe',	'02.07.1988',		'2');
+insert into cross_country_skiing.sportsmen values (default, 'Simen',	'Kruger',	'13.03.1993',	'2');
+insert into cross_country_skiing.sportsmen values (default, 'Martin',	'Sundby',	'26.09.1984',	'2');
+insert into cross_country_skiing.sportsmen values (default, 'Janosh',	'Brugger',	'01.06.1997',	'6');
+insert into cross_country_skiing.sportsmen values (default, 'Federico',	'Pellegrino',	'01.09.1990',	'4');
+insert into cross_country_skiing.sportsmen values (default, 'Francesco',	'De Fabiani',	'21.04.1993',	'4');
+insert into cross_country_skiing.sportsmen values (default, 'Adrien',	'Backsheider',	'07.08.1992',	'10');
+insert into cross_country_skiing.sportsmen values (default, 'Moris',	'Manificat',	'04.04.1986',	'10');
+insert into cross_country_skiing.sportsmen values (default, 'Richard',	'Jouve',	'25.10.1994',	'10');
+insert into cross_country_skiing.sportsmen values (default, 'Jean',	'Gailard',	'07.10.1980',	'10');
+insert into cross_country_skiing.sportsmen values (default, 'Iivo',	'Niskanen',	'12.01.1992',	'3');
+insert into cross_country_skiing.sportsmen values (default, 'Alex',	'Harvey',	'07.09.1988',	'8');
+insert into cross_country_skiing.sportsmen values (default, 'Erik',	'Bjorsnen',	'14.07.1991',	'7');
+insert into cross_country_skiing.sportsmen values (default, 'Calle',	'Halvarsson',	'17.03.1989',	'5');
+insert into cross_country_skiing.sportsmen values (default, 'Dario',	'Cologna',	'11.03.1986',	'9');
+
+insert into cross_country_skiing.sportsman_race values('1',	'1',	'1');
+insert into cross_country_skiing.sportsman_race values('5',	'1',	'2');
+insert into cross_country_skiing.sportsman_race values('7',	'1',	'3');
+insert into cross_country_skiing.sportsman_race values('1',	'2',	'1');
+insert into cross_country_skiing.sportsman_race values('6',	'2',	'2');
+insert into cross_country_skiing.sportsman_race values('20',	'2',	'3');
+insert into cross_country_skiing.sportsman_race values('11',	'3',	'1');
+insert into cross_country_skiing.sportsman_race values('6',	'3',	'2');
+insert into cross_country_skiing.sportsman_race values('18',	'3',	'3');
+insert into cross_country_skiing.sportsman_race values('7',	'4',	'1');
+insert into cross_country_skiing.sportsman_race values('8',	'4',	'2');
+insert into cross_country_skiing.sportsman_race values('2',	'4',	'3');
+insert into cross_country_skiing.sportsman_race values('10',	'5',	'1');
+insert into cross_country_skiing.sportsman_race values('16',	'5',	'2');
+insert into cross_country_skiing.sportsman_race values('19',	'5',	'3');
+insert into cross_country_skiing.sportsman_race values('5',	'6',	'1');
+insert into cross_country_skiing.sportsman_race values('11',	'6',	'2');
+insert into cross_country_skiing.sportsman_race values('13',	'6',	'3');
+insert into cross_country_skiing.sportsman_race values('3',	'7',	'1');
+insert into cross_country_skiing.sportsman_race values('14',	'7',	'2');
+insert into cross_country_skiing.sportsman_race values('9',	'7',	'3');
+insert into cross_country_skiing.sportsman_race values('5',	'8',	'1');
+insert into cross_country_skiing.sportsman_race values('12',	'8',	'2');
+insert into cross_country_skiing.sportsman_race values('1',	'8',	'3');
+insert into cross_country_skiing.sportsman_race values('5',	'9',	'1');
+insert into cross_country_skiing.sportsman_race values('4',	'9',	'2');
+insert into cross_country_skiing.sportsman_race values('8',	'9',	'3');
+insert into cross_country_skiing.sportsman_race values('21',	'10',	'1');
+insert into cross_country_skiing.sportsman_race values('2',	'10',	'2');
+insert into cross_country_skiing.sportsman_race values('6',	'10',	'3');
+insert into cross_country_skiing.sportsman_race values('17',	'11',	'1');
+insert into cross_country_skiing.sportsman_race values('10',	'11',	'2');
+insert into cross_country_skiing.sportsman_race values('7',	'11',	'3');
+insert into cross_country_skiing.sportsman_race values('9',	'12',	'1');
+insert into cross_country_skiing.sportsman_race values('7',	'12',	'2');
+insert into cross_country_skiing.sportsman_race values('5',	'12',	'3');
+insert into cross_country_skiing.sportsman_race values('20',	'13',	'1');
+insert into cross_country_skiing.sportsman_race values('1',	'13',	'2');
+insert into cross_country_skiing.sportsman_race values('6',	'13',	'3');
+insert into cross_country_skiing.sportsman_race values('5',	'15',	'1');
+insert into cross_country_skiing.sportsman_race values('11',	'15',	'2');
+insert into cross_country_skiing.sportsman_race values('1',	'15',	'3');
+insert into cross_country_skiing.sportsman_race values('3',	'17',	'1');
+insert into cross_country_skiing.sportsman_race values('8',	'17',	'2');
+insert into cross_country_skiing.sportsman_race values('7',	'17',	'3');
+insert into cross_country_skiing.sportsman_race values('8',	'18',	'1');
+insert into cross_country_skiing.sportsman_race values('9',	'18',	'2');
+insert into cross_country_skiing.sportsman_race values('21',	'18',	'3');
+insert into cross_country_skiing.sportsman_race values('5',	'14',	'1');
+insert into cross_country_skiing.sportsman_race values('6',	'14',	'1');
+insert into cross_country_skiing.sportsman_race values('7',	'14',	'1');
+insert into cross_country_skiing.sportsman_race values('9',	'14',	'1');
+insert into cross_country_skiing.sportsman_race values('1',	'14',	'2');
+insert into cross_country_skiing.sportsman_race values('2',	'14',	'2');
+insert into cross_country_skiing.sportsman_race values('3',	'14',	'2');
+insert into cross_country_skiing.sportsman_race values('4',	'14',	'2');
+insert into cross_country_skiing.sportsman_race values('13',	'14',	'3');
+insert into cross_country_skiing.sportsman_race values('14',	'14',	'3');
+insert into cross_country_skiing.sportsman_race values('15',	'14',	'3');
+insert into cross_country_skiing.sportsman_race values('16',	'14',	'3');
+insert into cross_country_skiing.sportsman_race values('1',	'16',	'1');
+insert into cross_country_skiing.sportsman_race values('2',	'16',	'1');
+insert into cross_country_skiing.sportsman_race values('3',	'16',	'1');
+insert into cross_country_skiing.sportsman_race values('4',	'16',	'1');
+insert into cross_country_skiing.sportsman_race values('5',	'16',	'2');
+insert into cross_country_skiing.sportsman_race values('6',	'16',	'2');
+insert into cross_country_skiing.sportsman_race values('7',	'16',	'2');
+insert into cross_country_skiing.sportsman_race values('8',	'16',	'2');
+insert into cross_country_skiing.sportsman_race values('13',	'16',	'3');
+insert into cross_country_skiing.sportsman_race values('14',	'16',	'3');
+insert into cross_country_skiing.sportsman_race values('15',	'16',	'3');
+insert into cross_country_skiing.sportsman_race values('16',	'16',	'3');
+
+insert into cross_country_skiing.coaches values (default, 'Marcus',	'Cramer',	'6');
+insert into cross_country_skiing.coaches values (default, 'Uriy',	'Borodavko',	'1');
+insert into cross_country_skiing.coaches values (default, 'Arlid',	'Monser',	'2');
+insert into cross_country_skiing.coaches values (default, 'Petter',	'Bransdal',	'2');
+insert into cross_country_skiing.coaches values (default, 'Gury',	'Hetland',	'2');
+insert into cross_country_skiing.coaches values (default, 'Alonzo',	'Burgmaster',	'9');
+insert into cross_country_skiing.coaches values (default, 'Doren',	'Aber',	'10');
+insert into cross_country_skiing.coaches values (default, 'Kerty',	'Niskanen',	'3');
+insert into cross_country_skiing.coaches values (default, 'Zibert',	'Clause',	'6');
+insert into cross_country_skiing.coaches values (default, 'Martin',	'Weng',	'2');
+insert into cross_country_skiing.coaches values (default, 'Sam',	'Wilson',	'8');
+insert into cross_country_skiing.coaches values (default, 'Ricard',	'Grenborg',	'5');
+insert into cross_country_skiing.coaches values (default, 'Yanne',	'Anderson',	'5');
+
+insert into cross_country_skiing.coach_sportsman values ('4',	'1',	'2002',	'3000');
+insert into cross_country_skiing.coach_sportsman values ('1',	'2',	'2006',	'3000');
+insert into cross_country_skiing.coach_sportsman values ('2',	'1',	'2002',	'3000');
+insert into cross_country_skiing.coach_sportsman values ('3',	'2',	'2002',	'3000');
+insert into cross_country_skiing.coach_sportsman values ('5',	'3',	'2002',	'3000');
+insert into cross_country_skiing.coach_sportsman values ('6',	'4',	'2003',	'3000');
+insert into cross_country_skiing.coach_sportsman values ('7',	'4',	'2004',	'3000');
+insert into cross_country_skiing.coach_sportsman values ('8',	'3',	'2008',	'2016');
+insert into cross_country_skiing.coach_sportsman values ('7',	'3',	'2017',	'3000');
+insert into cross_country_skiing.coach_sportsman values ('9',	'4',	'2007',	'3000');
+insert into cross_country_skiing.coach_sportsman values ('10',	'9',	'2008',	'3000');
+insert into cross_country_skiing.coach_sportsman values ('11',	'2',	'2004',	'3000');
+insert into cross_country_skiing.coach_sportsman values ('12',	'2',	'2006',	'3000');
+insert into cross_country_skiing.coach_sportsman values ('13',	'10',	'2005',	'3000');
+insert into cross_country_skiing.coach_sportsman values ('14',	'10',	'2008',	'3000');
+insert into cross_country_skiing.coach_sportsman values ('15',	'10',	'2012',	'3000');
+insert into cross_country_skiing.coach_sportsman values ('16',	'10',	'2006',	'3000');
+insert into cross_country_skiing.coach_sportsman values ('17',	'8',	'2002',	'3000');
+insert into cross_country_skiing.coach_sportsman values ('18',	'11',	'2004',	'3000');
+insert into cross_country_skiing.coach_sportsman values ('19',	'13',	'2006',	'3000');
+insert into cross_country_skiing.coach_sportsman values ('20',	'12',	'2002',	'3000');
+insert into cross_country_skiing.coach_sportsman values ('21',	'5',	'2005',	'2012');
+insert into cross_country_skiing.coach_sportsman values ('21',	'6',	'2013',	'3000');
+
+insert into cross_country_skiing.discipline_coach values ('1',	'2');
+insert into cross_country_skiing.discipline_coach values ('1',	'3');
+insert into cross_country_skiing.discipline_coach values ('1',	'4');
+insert into cross_country_skiing.discipline_coach values ('1',	'5');
+insert into cross_country_skiing.discipline_coach values ('1',	'10');
+insert into cross_country_skiing.discipline_coach values ('1',	'11');
+insert into cross_country_skiing.discipline_coach values ('2',	'1');
+insert into cross_country_skiing.discipline_coach values ('2',	'6');
+insert into cross_country_skiing.discipline_coach values ('2',	'7');
+insert into cross_country_skiing.discipline_coach values ('2',	'8');
+insert into cross_country_skiing.discipline_coach values ('2',	'9');
+insert into cross_country_skiing.discipline_coach values ('2',	'12');
+insert into cross_country_skiing.discipline_coach values ('2',	'13');
+insert into cross_country_skiing.discipline_coach values ('3',	'2');
+insert into cross_country_skiing.discipline_coach values ('3',	'3');
+insert into cross_country_skiing.discipline_coach values ('4',	'1');
+insert into cross_country_skiing.discipline_coach values ('4',	'4');
+insert into cross_country_skiing.discipline_coach values ('4',	'5');
+insert into cross_country_skiing.discipline_coach values ('4',	'6');
+insert into cross_country_skiing.discipline_coach values ('4',	'8');
+insert into cross_country_skiing.discipline_coach values ('4',	'9');
+insert into cross_country_skiing.discipline_coach values ('4',	'10');
+insert into cross_country_skiing.discipline_coach values ('3',	'12');
+insert into cross_country_skiing.discipline_coach values ('5',	'9');
+insert into cross_country_skiing.discipline_coach values ('5',	'6');
+insert into cross_country_skiing.discipline_coach values ('6',	'9');
+insert into cross_country_skiing.discipline_coach values ('6',	'6');
+insert into cross_country_skiing.discipline_coach values ('7',	'1');
+insert into cross_country_skiing.discipline_coach values ('7',	'4');
+insert into cross_country_skiing.discipline_coach values ('7',	'6');
+insert into cross_country_skiing.discipline_coach values ('7',	'9');
+insert into cross_country_skiing.discipline_coach values ('7',	'12');
+insert into cross_country_skiing.discipline_coach values ('8',	'4');
+insert into cross_country_skiing.discipline_coach values ('8',	'12');
+insert into cross_country_skiing.discipline_coach values ('8',	'8');
+insert into cross_country_skiing.discipline_coach values ('9',	'8');
+insert into cross_country_skiing.discipline_coach values ('9',	'5');
+insert into cross_country_skiing.discipline_coach values ('9',	'13');
+insert into cross_country_skiing.discipline_coach values ('10',	'1');
+insert into cross_country_skiing.discipline_coach values ('10',	'2');
+insert into cross_country_skiing.discipline_coach values ('10',	'3');
+insert into cross_country_skiing.discipline_coach values ('10',	'4');
+insert into cross_country_skiing.discipline_coach values ('10',	'5');
+insert into cross_country_skiing.discipline_coach values ('10',	'6');
+insert into cross_country_skiing.discipline_coach values ('10',	'7');
+insert into cross_country_skiing.discipline_coach values ('10',	'8');
+insert into cross_country_skiing.discipline_coach values ('10',	'9');
+insert into cross_country_skiing.discipline_coach values ('10',	'10');
+insert into cross_country_skiing.discipline_coach values ('10',	'11');
+insert into cross_country_skiing.discipline_coach values ('10',	'12');
+insert into cross_country_skiing.discipline_coach values ('10',	'13');
+insert into cross_country_skiing.discipline_coach values ('11',	'2');
+insert into cross_country_skiing.discipline_coach values ('11',	'3');
+insert into cross_country_skiing.discipline_coach values ('12',	'4');
+insert into cross_country_skiing.discipline_coach values ('12',	'6');
+insert into cross_country_skiing.discipline_coach values ('13',	'8');
+insert into cross_country_skiing.discipline_coach values ('13',	'5');
+
+
+-- ¬ыбираем всех победителей гонок, сортируем по возрасту
+select t.name, t.surname
+  from (
+    select distinct cross_country_skiing.sportsmen.name, cross_country_skiing.sportsmen.surname, cross_country_skiing.sportsmen.birth_date
+    from cross_country_skiing.sportsmen, cross_country_skiing.sportsman_race
+    where cross_country_skiing.sportsmen.sportsman_id = cross_country_skiing.sportsman_race.sportsman_id and cross_country_skiing.sportsman_race.result = '1'
+    ) as t
+    order by t.birth_date desc;
+
+-- —читаем кол-во спортсменов по странам
+select distinct cross_country_skiing.countries.country, count(cross_country_skiing.sportsmen.surname) as t
+  from cross_country_skiing.countries, cross_country_skiing.sportsmen
+  where cross_country_skiing.sportsmen.country_id = cross_country_skiing.countries.country_id
+  group by cross_country_skiing.countries.country
+  order by t desc;
+
+-- —читаем кол-во подиумов у спортсменов
+select cross_country_skiing.sportsmen.surname, count(cross_country_skiing.sportsman_race.result) as t
+  from cross_country_skiing.sportsmen, cross_country_skiing.sportsman_race
+    where cross_country_skiing.sportsmen.sportsman_id = cross_country_skiing.sportsman_race.sportsman_id
+  group by cross_country_skiing.sportsmen.surname
+  order by t desc;
+
+-- —читаем кол-во гонок каждого типа
+select cross_country_skiing.types_of_races.name, count(cross_country_skiing.races.race_id) as t
+ from cross_country_skiing.types_of_races, cross_country_skiing.races
+  where cross_country_skiing.types_of_races.type_id = cross_country_skiing.races.type_id
+  group by cross_country_skiing.types_of_races.name
+  order by t desc;
+
+
+-- ¬ыводим дистанции, на которых российские спортсмены были в призах хот€ бы 2 раза
+select cross_country_skiing.types_of_races.distance, count(cross_country_skiing.sportsmen.surname)
+  from cross_country_skiing.races, cross_country_skiing.types_of_races, cross_country_skiing.sportsman_race, cross_country_skiing.sportsmen, cross_country_skiing.countries
+  where cross_country_skiing.races.type_id = cross_country_skiing.types_of_races.type_id and cross_country_skiing.sportsman_race.race_id = cross_country_skiing.races.race_id
+    and cross_country_skiing.sportsman_race.sportsman_id = cross_country_skiing.sportsmen.sportsman_id and cross_country_skiing.sportsmen.country_id = cross_country_skiing.countries.country_id
+    and cross_country_skiing.countries.country = 'Russia'
+  group by cross_country_skiing.types_of_races.distance
+  having count(cross_country_skiing.sportsmen.surname) > 1;
+
+-- ѕредставление таблицы спортсменов
+create view Sportsmen
+as select cross_country_skiing.sportsmen.surname, cross_country_skiing.sportsmen.name, cross_country_skiing.countries.country
+  from cross_country_skiing.sportsmen, cross_country_skiing.countries
+    where cross_country_skiing.sportsmen.country_id = cross_country_skiing.countries.country_id;
+
+-- “ренер и спортсмен
+create view Sportsmen_Coach
+as select cross_country_skiing.sportsmen.surname as sportsman, cross_country_skiing.coaches.surname as coach
+  from cross_country_skiing.sportsmen, cross_country_skiing.coaches, cross_country_skiing.coach_sportsman
+  where cross_country_skiing.coaches.coach_id = cross_country_skiing.coach_sportsman.coach_id and
+        cross_country_skiing.sportsmen.sportsman_id = cross_country_skiing.coach_sportsman.sportsman_id and cross_country_skiing.coach_sportsman.date_end = '3000';
+
+-- ѕредставление гонок со странами и дистанцией
+create view Races
+as select cross_country_skiing.races.date, cross_country_skiing.types_of_races.name as type,
+          cross_country_skiing.types_of_races.distance, cross_country_skiing.countries.country
+  from cross_country_skiing.countries, cross_country_skiing.types_of_races, cross_country_skiing.races
+  where cross_country_skiing.countries.country_id = cross_country_skiing.races.country_id and
+        cross_country_skiing.races.type_id = cross_country_skiing.types_of_races.type_id;
+
+-- ѕредставление гонок со спортсменами и результатами
+create view Races_Sportsman
+as select cross_country_skiing.sportsmen.surname as sportsman, cross_country_skiing.races.date, cross_country_skiing.sportsman_race.result
+  from cross_country_skiing.races, cross_country_skiing.sportsman_race, cross_country_skiing.sportsmen
+  where cross_country_skiing.sportsmen.sportsman_id = cross_country_skiing.sportsman_race.sportsman_id and
+        cross_country_skiing.sportsman_race.race_id = cross_country_skiing.races.race_id;
+
+
+-- ѕример дл€ использовани€ age_sp()
+select cross_country_skiing.sportsmen.name, cross_country_skiing.sportsmen.surname, age_sp(cross_country_skiing.sportsmen.birth_date) as age
+from cross_country_skiing.sportsmen
+  order by age;
+
+-- ≈сли запустить эту строку, то вылезет мое ограничение на удаление последнего спортсмена из страны
+-- delete from cross_country_skiing.sportsmen where cross_country_skiinAg.sportsmen.sportsman_id = 21;
+
+
+-----------------------------------------------------------------------------------------------------------------
+----------------------------------------------„то-то новое-------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------
+
+
+-- 1) ќбычный пользователь -  может делать select, чтобы просто просматривать таблицы
+-- 2) –едактор - может работать с таблицами гонки, гонки&спортсмены, тренеры, тренеры&спортсмены, дисциплины&тренеры,
+--    т к гонки и тренеры, это часто мен€ющиес€ вещи по отношению к другим таблицам. –едактор будет иметь право на update, delete, insert  в эти таблицы.
+-- 3) ћодератор - имеет право на update, insert, delete, только по отношению уже ко всем таблицам
+-- 4) јдминистратор - может всЄ что и модератор, только еще может выдавать дополнительные права доступа на это
+
+create role ordinary_user;
+create role editor with password '1234';
+create role moderator with password '12345678';
+create role administrator with password 'qwerty1234';
+
+grant select on cross_country_skiing.sportsmen, cross_country_skiing.countries, cross_country_skiing.races,
+  cross_country_skiing.sportsman_race, cross_country_skiing.discipline_coach,
+  cross_country_skiing.types_of_races, cross_country_skiing.coach_sportsman, cross_country_skiing.coaches to ordinary_user;
+
+grant select on cross_country_skiing.sportsmen, cross_country_skiing.countries, cross_country_skiing.races,
+  cross_country_skiing.sportsman_race, cross_country_skiing.discipline_coach,
+  cross_country_skiing.types_of_races, cross_country_skiing.coach_sportsman, cross_country_skiing.coaches to editor;
+
+grant update, insert, delete on cross_country_skiing.races, cross_country_skiing.sportsman_race, cross_country_skiing.coaches,
+  cross_country_skiing.coach_sportsman to editor;
+
+grant select, update, insert, delete on cross_country_skiing.sportsmen, cross_country_skiing.countries, cross_country_skiing.races,
+  cross_country_skiing.sportsman_race, cross_country_skiing.discipline_coach,
+  cross_country_skiing.types_of_races, cross_country_skiing.coach_sportsman, cross_country_skiing.coaches to moderator;
+
+grant update, insert, delete on cross_country_skiing.sportsmen, cross_country_skiing.countries, cross_country_skiing.races,
+  cross_country_skiing.sportsman_race, cross_country_skiing.discipline_coach,
+  cross_country_skiing.types_of_races, cross_country_skiing.coach_sportsman, cross_country_skiing.coaches to administrator with grant option;
+
+--------------------------------------------------------------------------------------------------------------
+
+revoke select on cross_country_skiing.sportsmen, cross_country_skiing.countries, cross_country_skiing.races,
+  cross_country_skiing.sportsman_race, cross_country_skiing.discipline_coach,
+  cross_country_skiing.types_of_races, cross_country_skiing.coach_sportsman, cross_country_skiing.coaches from ordinary_user;
+
+revoke select on cross_country_skiing.sportsmen, cross_country_skiing.countries, cross_country_skiing.races,
+  cross_country_skiing.sportsman_race, cross_country_skiing.discipline_coach,
+  cross_country_skiing.types_of_races, cross_country_skiing.coach_sportsman, cross_country_skiing.coaches from editor;
+
+revoke update, insert, delete on cross_country_skiing.races, cross_country_skiing.sportsman_race, cross_country_skiing.coaches,
+  cross_country_skiing.coach_sportsman from editor;
+
+revoke select, update, insert, delete on cross_country_skiing.sportsmen, cross_country_skiing.countries, cross_country_skiing.races,
+  cross_country_skiing.sportsman_race, cross_country_skiing.discipline_coach,
+  cross_country_skiing.types_of_races, cross_country_skiing.coach_sportsman, cross_country_skiing.coaches from moderator;
+
+revoke update, insert, delete on cross_country_skiing.sportsmen, cross_country_skiing.countries, cross_country_skiing.races,
+  cross_country_skiing.sportsman_race, cross_country_skiing.discipline_coach,
+  cross_country_skiing.types_of_races, cross_country_skiing.coach_sportsman, cross_country_skiing.coaches from administrator cascade;
+
+drop role if exists ordinary_user;
+drop role if exists editor;
+drop role if exists moderator;
+drop role if exists administrator;
+
+drop table if exists cross_country_skiing.countries cascade;
+drop table if exists cross_country_skiing.sportsman_race cascade;
+drop table if exists cross_country_skiing.discipline_coach cascade;
+drop table if exists cross_country_skiing.coach_sportsman cascade;
+drop table if exists cross_country_skiing.races cascade;
+drop table if exists cross_country_skiing.sportsmen cascade;
+drop table if exists cross_country_skiing.coaches cascade;
+drop table if exists cross_country_skiing.types_of_races cascade;
+drop table if exists cross_country_skiing.logs cascade;
+drop schema if exists cross_country_skiing cascade;
+drop function if exists age_sp(birth_date date);
+drop function if exists before_delete();
+drop function if exists add_to_log();
+
+drop type if exists _tech;
+drop type if exists _gender;
+drop type if exists _result;
+
+drop trigger if exists t_user on cross_country_skiing.sportsmen;
+drop trigger if exists check_remove on cross_country_skiing.sportsmen;
